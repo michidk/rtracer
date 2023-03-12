@@ -149,10 +149,26 @@ impl Ray {
 
 fn main() {
     let mut scene = Scene::new();
+
+    // add a bunch of spheres
     scene.add(Sphere {
         center: Vec3::new(150.0, 150.0, 0.0),
         radius: 100.0,
     });
+    scene.add(Sphere {
+        center: Vec3::new(300.0, 300.0, 0.0),
+        radius: 32.0,
+    });
+    scene.add(Sphere {
+        center: Vec3::new(550.0, 450.0, 0.0),
+        radius: 50.0,
+    });
+    scene.add(Sphere {
+        center: Vec3::new(600.0, -20.0, 0.0),
+        radius: 300.0,
+    });
+
+
     let raytracer = Raytracer::new(scene);
     let mut canvas = Canvas::default();
     raytracer.render(&mut canvas);
