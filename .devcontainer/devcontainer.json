@@ -2,5 +2,6 @@
 	"name": "Rust",
 	"build": {
 		"dockerfile": "Dockerfile"
-	}
+	},
+	"remoteUser": "root"
 }

@@ -1,7 +1,7 @@
 use core::fmt;
 
 use gfx_maths::Vec3;
-use image::{DynamicImage, Rgba, GenericImage};
+use image::{DynamicImage, GenericImage, Rgba};
 
 #[derive(Debug, Clone, PartialEq)]
 struct Canvas {
@@ -12,20 +12,42 @@ struct Canvas {
 
 impl Canvas {
     pub fn new(width: u32, height: u32) -> Canvas {
-        Canvas { width, height, image: DynamicImage::new_rgb8(width, height) }
+        Canvas {
+            width,
+            height,
+            image: DynamicImage::new_rgb8(width, height),
+        }
     }
 
     pub fn draw(&mut self, x: u32, y: u32, color: Color) {
+        if x >= self.width || y >= self.height {
+            panic!(
+                "drawing outside of canvas: point ({}, {}) outside dimensions ({}/{})",
+                x, y, self.width, self.height
+            );
+        }
+
         let pixel = color.to_rgba();
         self.image.put_pixel(x, y, pixel);
     }
 
-    pub fn draw_area(&mut self, x: u32, y: u32, width: u32, height: u32, color: Color) {
-        let pixel = color.to_rgba();
-        for x in x..x + width {
-            for y in y..y + height {
-                self.image.put_pixel(x, y, pixel);
-            }
+    pub fn draw_area(&mut self, x: u32, y: u32, width: u32, colors: &[Color]) {
+        if x + width > self.width || y + colors.len() as u32 / width > self.height {
+            panic!(
+                "drawing outside of canvas: drawing area ({}-{}, {}-{}) outside dimensions ({}/{})",
+                x,
+                width,
+                y,
+                colors.len() as u32 / width,
+                self.width,
+                self.height
+            );
+        }
+
+        for (i, color) in colors.iter().enumerate() {
+            let x = x + (i as u32 % width);
+            let y = y + (i as u32 / width);
+            self.draw(x, y, *color);
         }
     }
 
@@ -77,7 +99,8 @@ impl Raytracer {
         for x in 0..width {
             for y in 0..height {
                 for object in &self.scene.renderables {
-                    let ray = Ray::new(Vec3::new(x as f32, y as f32, 0.0), Vec3::new(0.0, 0.0, 1.0));
+                    let ray =
+                        Ray::new(Vec3::new(x as f32, y as f32, 0.0), Vec3::new(0.0, 0.0, 1.0));
                     if let Some(t) = object.intersect(&ray) {
                         // println!("{} {} {:?}", x, y, object);
                         canvas.draw(x, y, color);
@@ -114,23 +137,48 @@ struct Sphere {
 }
 
 impl Renderable for Sphere {
+    /// Returns the distance along the ray at which the sphere is intersected
     // https://www.cs.princeton.edu/courses/archive/fall00/cs426/lectures/raycast/raycast.pdf (page 6-7)
     fn intersect(&self, ray: &Ray) -> Option<f32> {
-        let l = self.center - ray.origin;
-        let tca = l.dot(ray.direction);
-        let d2 = l.dot(l) - tca * tca;
-        let radius2 = self.radius * self.radius;
-        if d2 > radius2 {
+        // distance vector between the center of the sphere and the ray origin
+        // https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-sphere-intersection.html
+        let center_dir = self.center - ray.origin; // `L = O - P_0`
+
+        // project the distance vector onto the ray direction
+        // gives the distance from the viewpoint to the center of the sphere projected onto the ray
+        let ray_to_center = center_dir.dot(ray.direction); // `t_ca = L . V`
+
+        // dot product = 1 angles match, 0: angles are perpendicular, -1: angles are opposite
+        // if the cosine of the angle between the ray and the center of the sphere is negative, the ray is pointing away from the sphere
+        if ray_to_center < 0.0 {
             return None;
         }
-        let thc = (radius2 - d2).sqrt();
-        let t0 = tca - thc;
-        let t1 = tca + thc;
-        if t0 < 0.0 && t1 < 0.0 {
+
+        // projects the center of the sphere onto the ray, so that `d` would be the (shortest) distance between the ray and the center of the sphere
+        // dot product of vector by itself is the square of it's magnitude (length)
+        let proj_dist2 = center_dir.dot(center_dir) - ray_to_center.powi(2); // `d^2 = L . L - t_ca^2`
+        let radius2 = self.radius.powi(2); // `r^2`
+
+        // if the projected distance is greater than the radius, the ray misses the sphere
+        if proj_dist2 > radius2 {
             return None;
         }
-        let t = if t0 < t1 { t0 } else { t1 };
-        Some(t)
+
+        // the distance between the hit point and center of the sphere projected onto the ray
+        // (basically how deep the ray would have to penetrate the sphere to reach the center (halfway through))
+        let penetration_halfway = (radius2 - proj_dist2).sqrt(); // `t_hc = sqrt(r^2 - d^2)`
+
+        // both intersections: the ray enters the sphere at distance `t_0` and exits at distance `t_1`
+        let hit_in = ray_to_center - penetration_halfway; // `t_0 = t_ca - t_hc`
+        let hit_out = ray_to_center + penetration_halfway; // `t_1 = t_ca + t_hc`
+
+        // if both `t0` and `t1` are negative, the ray is pointing away from the sphere (or the sphere is behind the camera/ray origin)
+        if hit_in < 0.0 && hit_out < 0.0 {
+            return None;
+        }
+
+        // return the closest intersection
+        Some(if hit_in < hit_out { hit_in } else { hit_out })
     }
 }
 
@@ -145,7 +193,6 @@ impl Ray {
         Ray { origin, direction }
     }
 }
-
 
 fn main() {
     let mut scene = Scene::new();
@@ -168,9 +215,26 @@ fn main() {
         radius: 300.0,
     });
 
-
     let raytracer = Raytracer::new(scene);
     let mut canvas = Canvas::default();
+
+    // render a nice backdrop
+    let mut backdrop = vec![Color::new(0, 0, 0); (canvas.width * canvas.height) as usize];
+    for x in 0..canvas.width {
+        for y in 0..canvas.height {
+            let t = y as f32 / canvas.height as f32;
+
+            let color = Color::new(
+                (122.0 * (1.0 - t) + 220.0 * t) as u8,
+                (170.0 * (1.0 - t) + 220.0 * t) as u8,
+                (255.0 * (1.0 - t) + 230.0 * t) as u8,
+            );
+
+            backdrop[(y * canvas.width + x) as usize] = color;
+        }
+    }
+    canvas.draw_area(0, 0, canvas.width, &backdrop);
+
     raytracer.render(&mut canvas);
     canvas.save("render.png");
 }
